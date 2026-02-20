@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nébula: Resistencia 9</title>
+  <style>
+    :root {
+      --bg: #040612;
+      --panel: #0c1430;
+      --line: #253b79;
+      --text: #e8f0ff;
+      --aqua: #54f0d1;
+      --warn: #ffd166;
+      --danger: #ff5277;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at top, #132354 0, var(--bg) 52%);
+      color: var(--text);
+      font-family: Inter, Segoe UI, Roboto, system-ui, sans-serif;
+      display: grid;
+      place-items: center;
+      padding: 12px;
+    }
+
+    .app {
+      width: min(980px, 100%);
+      display: grid;
+      gap: 12px;
+    }
+
+    .hud {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      font-weight: 700;
+    }
+
+    .card {
+      background: linear-gradient(180deg, #101a3e, #0a1128);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      text-align: center;
+      box-shadow: 0 8px 20px rgb(0 0 0 / 28%);
+    }
+
+    .card small { opacity: .75; display: block; font-weight: 600; }
+
+    .game-wrap {
+      position: relative;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 2px solid var(--line);
+      box-shadow: 0 20px 36px rgb(0 0 0 / 35%);
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: linear-gradient(#050814, #080f28);
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      background: linear-gradient(to bottom, rgb(3 7 18 / 45%), rgb(3 7 18 / 75%));
+      padding: 20px;
+    }
+
+    .panel {
+      max-width: 680px;
+      background: rgb(11 18 45 / 92%);
+      border: 1px solid #3852a0;
+      border-radius: 16px;
+      padding: 24px 22px;
+    }
+
+    h1 { margin: 0 0 8px; font-size: clamp(1.4rem, 2.5vw, 2rem); }
+    p { margin: 6px 0; }
+
+    .accent { color: var(--aqua); }
+    .warn { color: var(--warn); }
+    .danger { color: var(--danger); }
+
+    .hint {
+      font-size: .92rem;
+      opacity: .9;
+      margin-top: 12px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 6px 10px;
+      border: 1px solid #4261b8;
+      border-radius: 999px;
+      margin-top: 10px;
+      font-size: .9rem;
+      background: #101b42;
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="hud">
+      <div class="card"><small>Puntuación</small><span id="score">0</span></div>
+      <div class="card"><small>Integridad</small><span id="health">100%</span></div>
+      <div class="card"><small>Oleada</small><span id="wave">1</span></div>
+      <div class="card"><small>Núcleos</small><span id="cores">0</span></div>
+    </section>
+
+    <section class="game-wrap">
+      <canvas id="game" width="960" height="540" aria-label="Nébula Resistencia 9"></canvas>
+      <div class="overlay" id="overlay"></div>
+    </section>
+  </main>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+
+    const ui = {
+      score: document.getElementById('score'),
+      health: document.getElementById('health'),
+      wave: document.getElementById('wave'),
+      cores: document.getElementById('cores'),
+    };
+
+    const state = {
+      running: false,
+      gameOver: false,
+      score: 0,
+      health: 100,
+      wave: 1,
+      cores: 0,
+      keys: new Set(),
+      stars: [],
+      bullets: [],
+      enemies: [],
+      enemyShots: [],
+      particles: [],
+      spawnMs: 0,
+      nextSpawn: 1100,
+      fireCooldown: 0,
+      invulMs: 0,
+      boss: null,
+      player: {
+        x: canvas.width / 2,
+        y: canvas.height - 70,
+        w: 46,
+        h: 30,
+        speed: 0.44,
+      },
+      lastTs: 0,
+    };
+
+    function setOverlay(html, visible = true) {
+      overlay.innerHTML = html;
+      overlay.style.display = visible ? 'grid' : 'none';
+    }
+
+    function startScreen() {
+      setOverlay(`
+        <div class="panel">
+          <h1>Nébula: <span class="accent">Resistencia 9</span></h1>
+          <p>Eres la última nave de defensa de la colonia Titán-9.</p>
+          <p>Resiste oleadas, destruye drones y derrota al <span class="warn">Nexo Leviatán</span>.</p>
+          <p class="hint">Mover: <b>A/D</b> o <b>←/→</b> · Disparar: <b>ESPACIO</b> · Pausa: <b>P</b> · Reiniciar: <b>R</b></p>
+          <span class="badge">Pulsa ESPACIO para iniciar misión</span>
+        </div>
+      `);
+    }
+
+    function updateUI() {
+      ui.score.textContent = state.score;
+      ui.health.textContent = `${state.health}%`;
+      ui.wave.textContent = state.wave;
+      ui.cores.textContent = state.cores;
+    }
+
+    function resetGame() {
+      state.running = false;
+      state.gameOver = false;
+      state.score = 0;
+      state.health = 100;
+      state.wave = 1;
+      state.cores = 0;
+      state.bullets = [];
+      state.enemies = [];
+      state.enemyShots = [];
+      state.particles = [];
+      state.spawnMs = 0;
+      state.nextSpawn = 1000;
+      state.fireCooldown = 0;
+      state.invulMs = 0;
+      state.boss = null;
+      state.player.x = canvas.width / 2;
+      updateUI();
+      startScreen();
+    }
+
+    function initStars() {
+      state.stars = Array.from({ length: 190 }, () => ({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        size: Math.random() * 1.8 + 0.2,
+        speed: Math.random() * 0.045 + 0.015,
+      }));
+    }
+
+    function spawnEnemy() {
+      const eliteChance = Math.min(0.34, state.wave * 0.035);
+      const elite = Math.random() < eliteChance;
+      const w = elite ? 56 : 34;
+      const h = elite ? 28 : 22;
+      state.enemies.push({
+        x: Math.random() * (canvas.width - w),
+        y: -42,
+        w,
+        h,
+        hp: elite ? 4 + Math.floor(state.wave / 2) : 2 + Math.floor(state.wave / 4),
+        speed: (elite ? 0.10 : 0.16) + state.wave * 0.012,
+        shootRate: elite ? 0.0025 : 0.0012,
+        elite,
+      });
+    }
+
+    function maybeSpawnBoss() {
+      if (!state.boss && state.wave > 0 && state.wave % 5 === 0) {
+        state.boss = {
+          x: canvas.width / 2 - 120,
+          y: 34,
+          w: 240,
+          h: 58,
+          hp: 60 + state.wave * 12,
+          maxHp: 60 + state.wave * 12,
+          dir: 1,
+          shootMs: 0,
+        };
+      }
+    }
+
+    function shoot() {
+      if (!state.running || state.gameOver || state.fireCooldown > 0) return;
+      state.bullets.push({ x: state.player.x - 10, y: state.player.y - 20, w: 4, h: 16, v: 0.78 });
+      state.bullets.push({ x: state.player.x + 8, y: state.player.y - 20, w: 4, h: 16, v: 0.78 });
+      state.fireCooldown = 120;
+    }
+
+    function explode(x, y, color, amount = 12) {
+      for (let i = 0; i < amount; i++) {
+        state.particles.push({
+          x,
+          y,
+          vx: (Math.random() - 0.5) * 0.95,
+          vy: (Math.random() - 0.5) * 0.95,
+          life: 650,
+          color,
+        });
+      }
+    }
+
+    function hit(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function damagePlayer(amount) {
+      if (state.invulMs > 0) return;
+      state.health = Math.max(0, state.health - amount);
+      state.invulMs = 820;
+      explode(state.player.x, state.player.y, '#ff5277', 24);
+    }
+
+    function update(dt) {
+      if (!state.running || state.gameOver) return;
+
+      const left = state.keys.has('a') || state.keys.has('arrowleft');
+      const right = state.keys.has('d') || state.keys.has('arrowright');
+      if (left) state.player.x -= dt * state.player.speed;
+      if (right) state.player.x += dt * state.player.speed;
+      state.player.x = Math.max(26, Math.min(canvas.width - 26, state.player.x));
+
+      state.fireCooldown = Math.max(0, state.fireCooldown - dt);
+      state.invulMs = Math.max(0, state.invulMs - dt);
+      state.spawnMs += dt;
+
+      maybeSpawnBoss();
+
+      if (!state.boss && state.spawnMs > state.nextSpawn) {
+        state.spawnMs = 0;
+        spawnEnemy();
+        state.nextSpawn = Math.max(240, 1020 - state.wave * 52 - Math.random() * 140);
+      }
+
+      for (const s of state.stars) {
+        s.y += s.speed * dt;
+        if (s.y > canvas.height + 2) {
+          s.y = -2;
+          s.x = Math.random() * canvas.width;
+        }
+      }
+
+      for (const b of state.bullets) b.y -= b.v * dt;
+      state.bullets = state.bullets.filter((b) => b.y + b.h > -8);
+
+      for (const e of state.enemies) {
+        e.y += e.speed * dt;
+        if (Math.random() < e.shootRate * dt) {
+          state.enemyShots.push({ x: e.x + e.w / 2, y: e.y + e.h, w: 4, h: 12, v: 0.34 + state.wave * 0.018 });
+        }
+      }
+
+      for (const s of state.enemyShots) s.y += s.v * dt;
+      state.enemyShots = state.enemyShots.filter((s) => s.y < canvas.height + 16);
+
+      for (const enemy of state.enemies) {
+        if (enemy.y > canvas.height) {
+          enemy.hp = 0;
+          damagePlayer(enemy.elite ? 15 : 9);
+        }
+      }
+
+      for (const shot of state.enemyShots) {
+        if (hit(shot, { x: state.player.x - 20, y: state.player.y - 22, w: 40, h: 36 })) {
+          shot.y = canvas.height + 60;
+          damagePlayer(8);
+        }
+      }
+
+      for (const bullet of state.bullets) {
+        for (const enemy of state.enemies) {
+          if (enemy.hp > 0 && hit(bullet, enemy)) {
+            enemy.hp -= 1;
+            bullet.y = -100;
+            explode(enemy.x + enemy.w / 2, enemy.y + enemy.h / 2, '#54f0d1', 8);
+            if (enemy.hp <= 0) {
+              state.score += enemy.elite ? 32 : 12;
+              if (enemy.elite) state.cores += 1;
+            }
+            break;
+          }
+        }
+
+        if (state.boss && hit(bullet, state.boss)) {
+          state.boss.hp -= 1;
+          bullet.y = -100;
+          explode(bullet.x, bullet.y, '#ffd166', 4);
+          if (state.boss.hp <= 0) {
+            state.score += 320;
+            state.cores += 5;
+            explode(state.boss.x + state.boss.w / 2, state.boss.y + state.boss.h / 2, '#ff5277', 80);
+            state.boss = null;
+            state.wave += 1;
+          }
+        }
+      }
+
+      if (state.boss) {
+        state.boss.x += state.boss.dir * dt * 0.16;
+        if (state.boss.x <= 40 || state.boss.x + state.boss.w >= canvas.width - 40) state.boss.dir *= -1;
+        state.boss.shootMs += dt;
+        if (state.boss.shootMs > 650) {
+          state.boss.shootMs = 0;
+          for (let i = 0; i < 5; i++) {
+            state.enemyShots.push({
+              x: state.boss.x + 22 + i * 48,
+              y: state.boss.y + state.boss.h,
+              w: 5,
+              h: 14,
+              v: 0.38 + state.wave * 0.014,
+            });
+          }
+        }
+      }
+
+      state.enemies = state.enemies.filter((e) => e.hp > 0);
+
+      for (const p of state.particles) {
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+      }
+      state.particles = state.particles.filter((p) => p.life > 0);
+
+      const calcWave = Math.floor(state.score / 180) + 1;
+      if (calcWave > state.wave && !state.boss) state.wave = calcWave;
+
+      if (state.health <= 0) {
+        state.running = false;
+        state.gameOver = true;
+        setOverlay(`
+          <div class="panel">
+            <h1 class="danger">Se perdió la colonia</h1>
+            <p>Puntuación final: <span class="accent">${state.score}</span></p>
+            <p>Oleada alcanzada: <span class="warn">${state.wave}</span> · Núcleos: <span class="accent">${state.cores}</span></p>
+            <p class="hint">Pulsa <b>R</b> para reiniciar otra misión.</p>
+          </div>
+        `);
+      }
+
+      updateUI();
+    }
+
+    function drawShip() {
+      const x = state.player.x;
+      const y = state.player.y;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.globalAlpha = state.invulMs > 0 && Math.floor(state.invulMs / 80) % 2 === 0 ? 0.35 : 1;
+
+      ctx.fillStyle = '#90b4ff';
+      ctx.beginPath();
+      ctx.moveTo(0, -24);
+      ctx.lineTo(20, 14);
+      ctx.lineTo(6, 10);
+      ctx.lineTo(0, 18);
+      ctx.lineTo(-6, 10);
+      ctx.lineTo(-20, 14);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = '#54f0d1';
+      ctx.fillRect(-4, 2, 8, 14);
+      ctx.fillStyle = '#ffd166';
+      ctx.fillRect(-3, 16, 6, 10);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
+    function drawEnemy(e) {
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      ctx.fillStyle = e.elite ? '#ff7895' : '#ff5277';
+      ctx.fillRect(0, 0, e.w, e.h);
+      ctx.fillStyle = '#ffd4de';
+      ctx.fillRect(e.w * .18, e.h * .2, e.w * .64, e.h * .3);
+      ctx.restore();
+    }
+
+    function drawBoss() {
+      if (!state.boss) return;
+      const b = state.boss;
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.fillStyle = '#5f1834';
+      ctx.fillRect(0, 0, b.w, b.h);
+      ctx.fillStyle = '#ff5277';
+      ctx.fillRect(10, 12, b.w - 20, 20);
+      ctx.fillStyle = '#ffd0dd';
+      ctx.fillRect(30, 18, b.w - 60, 8);
+      ctx.restore();
+
+      const barW = 340;
+      const hpRatio = Math.max(0, b.hp / b.maxHp);
+      ctx.fillStyle = '#1d274f';
+      ctx.fillRect((canvas.width - barW) / 2, 12, barW, 12);
+      ctx.fillStyle = '#ff5277';
+      ctx.fillRect((canvas.width - barW) / 2, 12, barW * hpRatio, 12);
+      ctx.strokeStyle = '#6a84dc';
+      ctx.strokeRect((canvas.width - barW) / 2, 12, barW, 12);
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (const s of state.stars) {
+        ctx.fillStyle = `rgba(185, 210, 255, ${Math.min(1, s.size / 2 + 0.25)})`;
+        ctx.fillRect(s.x, s.y, s.size, s.size);
+      }
+
+      drawShip();
+      for (const e of state.enemies) drawEnemy(e);
+      drawBoss();
+
+      ctx.fillStyle = '#54f0d1';
+      for (const b of state.bullets) ctx.fillRect(b.x, b.y, b.w, b.h);
+
+      ctx.fillStyle = '#ff9fb4';
+      for (const s of state.enemyShots) ctx.fillRect(s.x, s.y, s.w, s.h);
+
+      for (const p of state.particles) {
+        ctx.globalAlpha = p.life / 650;
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, 2.8, 2.8);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function loop(ts) {
+      if (!state.lastTs) state.lastTs = ts;
+      const dt = Math.min(33, ts - state.lastTs);
+      state.lastTs = ts;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    window.addEventListener('keydown', (e) => {
+      const key = e.key.toLowerCase();
+      if (['arrowleft', 'arrowright', 'a', 'd', ' ', 'r', 'p'].includes(key)) e.preventDefault();
+      state.keys.add(key);
+
+      if (key === ' ' || key === 'spacebar') {
+        if (!state.running && !state.gameOver) {
+          state.running = true;
+          setOverlay('', false);
+        } else {
+          shoot();
+        }
+      }
+
+      if (key === 'p' && !state.gameOver) {
+        state.running = !state.running;
+        if (state.running) {
+          setOverlay('', false);
+        } else {
+          setOverlay('<div class="panel"><h1>Pausa táctica</h1><p>Presiona <b>P</b> para continuar.</p></div>');
+        }
+      }
+
+      if (key === 'r') resetGame();
+    });
+
+    window.addEventListener('keyup', (e) => state.keys.delete(e.key.toLowerCase()));
+
+    initStars();
+    resetGame();
+    updateUI();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
